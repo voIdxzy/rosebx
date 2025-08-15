@@ -1,0 +1,366 @@
+# Gabungkan ulang script full final jadi satu file .lua
+
+# Bagian 1 (Utility section)
+part1 = r"""
+local lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/Just3itx/3itx-UI-LIB/refs/heads/main/Lib"))()
+local FlagsManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Just3itx/3itx-UI-LIB/refs/heads/main/ConfigManager"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInput = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
+
+local LocalPlayer = Players.LocalPlayer
+
+local main = lib:Load({
+    Title = 'VSTAR',
+    ToggleButton = "RBXID or GetCustomasset",
+    BindGui = Enum.KeyCode.RightControl,
+})
+
+local TabMain = main:AddTab("MAIN")
+main:SelectTab()
+
+local SecUtility = TabMain:AddSection({Title = "Utility"})
+
+local antiAFKConnection
+SecUtility:AddToggle("AntiAFKToggle", {
+    Title = "Anti AFK",
+    Default = false,
+    Callback = function(state)
+        if state then
+            if not antiAFKConnection then
+                antiAFKConnection = LocalPlayer.Idled:Connect(function()
+                    local vu = game:GetService("VirtualUser")
+                    vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                    task.wait(1)
+                    vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                end)
+            end
+        else
+            if antiAFKConnection then
+                antiAFKConnection:Disconnect()
+                antiAFKConnection = nil
+            end
+        end
+    end
+})
+
+local autoReconnectEnabled = false
+local rejoinLoopThread = nil
+local reconnectConns = {}
+local function stopRejoinLoop()
+    autoReconnectEnabled = false
+    rejoinLoopThread = nil
+end
+local function startRejoinLoop()
+    if rejoinLoopThread then return end
+    rejoinLoopThread = task.spawn(function()
+        local delaySec = 6
+        while autoReconnectEnabled do
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            task.wait(delaySec)
+        end
+    end)
+end
+local function connectAutoReconnectSignals()
+    for _, c in ipairs(reconnectConns) do pcall(function() c:Disconnect() end) end
+    table.clear(reconnectConns)
+    table.insert(reconnectConns, TeleportService.TeleportInitFailed:Connect(function(player, result, msg)
+        if autoReconnectEnabled and player == LocalPlayer then
+            startRejoinLoop()
+        end
+    end))
+    table.insert(reconnectConns, LocalPlayer.OnTeleport:Connect(function(state)
+        if autoReconnectEnabled and state == Enum.TeleportState.Failed then
+            startRejoinLoop()
+        end
+    end))
+    table.insert(reconnectConns, CoreGui.DescendantAdded:Connect(function(obj)
+        if not autoReconnectEnabled then return end
+        if obj.Name == "ErrorPrompt" then
+            startRejoinLoop()
+        end
+    end))
+    table.insert(reconnectConns, GuiService.ErrorMessageChanged:Connect(function(msg)
+        if autoReconnectEnabled and msg and #msg > 0 then
+            startRejoinLoop()
+        end
+    end))
+end
+local function disableAutoReconnect()
+    stopRejoinLoop()
+    for _, c in ipairs(reconnectConns) do pcall(function() c:Disconnect() end) end
+    table.clear(reconnectConns)
+end
+SecUtility:AddToggle("AutoReconnect", {
+    Title = "Auto Reconnect",
+    Default = false,
+    Callback = function(v)
+        autoReconnectEnabled = v
+        if v then
+            connectAutoReconnectSignals()
+        else
+            disableAutoReconnect()
+        end
+    end
+})
+SecUtility:AddButton({
+    Title = "Rejoin",
+    Callback = function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end
+})
+SecUtility:AddButton({
+    Title = "Hop Server",
+    Callback = function()
+        local ok, res = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(
+                ("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+            ))
+        end)
+        if not ok or not res or not res.data then return end
+        for _, srv in ipairs(res.data) do
+            if srv.id ~= game.JobId and srv.playing < srv.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, srv.id, LocalPlayer)
+                return
+            end
+        end
+    end
+})
+SecUtility:AddButton({
+    Title = "Copy Server ID",
+    Callback = function()
+        if setclipboard then
+            setclipboard(game.JobId)
+        end
+    end
+})
+SecUtility:AddTextbox({
+    Title = "Join via Server ID",
+    Default = "",
+    PlaceHolder = "Masukkan JobId",
+    TextDisappear = false,
+    Callback = function(id)
+        if typeof(id) == "string" and #id > 0 then
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, id, LocalPlayer)
+        end
+    end
+})
+"""
+
+# Bagian 2 (Player, Misc, Server, Config)
+part2 = r"""
+local TabPlayer = main:AddTab("PLAYER")
+local SecMovement = TabPlayer:AddSection({ Title = "Movement" })
+local wsToggle, wsValue = false, 16
+local defaultWS = 16
+SecMovement:AddToggle("WalkSpeedToggle", {
+    Title = "Walk Speed",
+    Default = false,
+    Callback = function(v)
+        wsToggle = v
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if not v and hum then
+            hum.WalkSpeed = defaultWS
+        end
+    end
+})
+SecMovement:AddSlider("WalkSpeedValue", {
+    Title = "Walk Speed Value",
+    Min = 0,
+    Max = 200,
+    Default = 16,
+    Callback = function(val) wsValue = val end
+})
+RunService.Stepped:Connect(function()
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if wsToggle and hum then
+        hum.WalkSpeed = wsValue
+    end
+end)
+local hjToggle, hjValue = false, 50
+local defaultJP = 50
+SecMovement:AddToggle("HighJumpToggle", {
+    Title = "High Jump",
+    Default = false,
+    Callback = function(v)
+        hjToggle = v
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if not v and hum then
+            hum.JumpPower = defaultJP
+        end
+    end
+})
+SecMovement:AddSlider("HighJumpValue", {
+    Title = "High Jump Power",
+    Min = 0,
+    Max = 300,
+    Default = 50,
+    Callback = function(val) hjValue = val end
+})
+RunService.Stepped:Connect(function()
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hjToggle and hum then
+        hum.JumpPower = hjValue
+    end
+end)
+LocalPlayer.CharacterAdded:Connect(function(char)
+    local hum = char:WaitForChild("Humanoid")
+    hum.WalkSpeed = wsToggle and wsValue or defaultWS
+    hum.JumpPower = hjToggle and hjValue or defaultJP
+    if godmode then
+        hum.MaxHealth = math.huge
+        hum.Health = math.huge
+        hum.HealthChanged:Connect(function()
+            if godmode then
+                hum.MaxHealth = math.huge
+                hum.Health = math.huge
+            end
+        end)
+    end
+end)
+local infJump = false
+SecMovement:AddToggle("InfiniteJump", { Title = "Infinite Jump", Default = false, Callback = function(v) infJump = v end })
+UserInput.JumpRequest:Connect(function()
+    local char = LocalPlayer.Character
+    if infJump and char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+local SecMode = TabPlayer:AddSection({ Title = "Mode" })
+local noclip = false
+SecMode:AddToggle("NoClip", { Title = "No Clip", Default = false, Callback = function(v) noclip = v end })
+RunService.Stepped:Connect(function()
+    if noclip then
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+SecMode:AddToggle("NoFallDamage", {
+    Title = "No Fall Damage",
+    Default = false,
+    Callback = function(v)
+        local char = LocalPlayer.Character
+        if v and char and char:FindFirstChildOfClass("Humanoid") then
+            char:FindFirstChildOfClass("Humanoid").StateChanged:Connect(function(_, new)
+                if new == Enum.HumanoidStateType.Freefall then
+                    char:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Seated)
+                end
+            end)
+        end
+    end
+})
+godmode = false
+SecMode:AddToggle("Godmode", {
+    Title = "Godmode",
+    Default = false,
+    Callback = function(v)
+        godmode = v
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            if v then
+                hum.MaxHealth = math.huge
+                hum.Health = math.huge
+                hum.HealthChanged:Connect(function()
+                    if godmode then
+                        hum.MaxHealth = math.huge
+                        hum.Health = math.huge
+                    end
+                end)
+            else
+                hum.MaxHealth = 100
+                hum.Health = 100
+            end
+        end
+    end
+})
+RunService.Stepped:Connect(function()
+    if godmode and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        hum.MaxHealth = math.huge
+        hum.Health = math.huge
+    end
+end)
+local antiRemoteKill = false
+SecMode:AddToggle("AntiRemoteKill", {
+    Title = "Anti Remote Damage",
+    Default = false,
+    Callback = function(v)
+        antiRemoteKill = v
+    end
+})
+local function protectFromRemoteKill(obj)
+    if obj:IsA("RemoteEvent") then
+        obj.OnClientEvent:Connect(function(...)
+            if antiRemoteKill then
+                local name = tostring(obj.Name):lower()
+                if name:find("kill") or name:find("damage") then
+                    return
+                end
+            end
+        end)
+    elseif obj:IsA("RemoteFunction") then
+        local oldInvoke = obj.OnClientInvoke
+        obj.OnClientInvoke = function(...)
+            if antiRemoteKill then
+                local name = tostring(obj.Name):lower()
+                if name:find("kill") or name:find("damage") then
+                    return nil
+                end
+            end
+            if oldInvoke then
+                return oldInvoke(...)
+            end
+        end
+    end
+end
+for _, obj in ipairs(game:GetDescendants()) do
+    protectFromRemoteKill(obj)
+end
+game.DescendantAdded:Connect(function(obj)
+    protectFromRemoteKill(obj)
+end)
+local TabMisc = main:AddTab("MISC")
+local SecVisual = TabMisc:AddSection({ Title = "Visuals" })
+SecVisual:AddButton({
+    Title = "Full Bright",
+    Callback = function()
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.FogEnd = 1e10
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+    end
+})
+local TabServer = main:AddTab("SERVER")
+TabServer:AddButton({
+    Title = "Rejoin Server",
+    Callback = function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end
+})
+local TabConfig = main:AddTab("CONFIG")
+FlagsManager:SetLibrary(lib)
+FlagsManager:LoadConfig()
+"""
+
+# Gabungkan dan simpan
+full_script = part1 + part2
+file_path = "/mnt/data/VSTAR_full_final.lua"
+with open(file_path, "w", encoding="utf-8") as f:
+    f.write(full_script)
+
+file_path
