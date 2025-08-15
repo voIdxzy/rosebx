@@ -1,0 +1,600 @@
+--// VSTAR FINAL + Fly (ported faithfully from FlyGuiV3, without its GUI)
+
+local lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/Just3itx/3itx-UI-LIB/refs/heads/main/Lib"))()
+local FlagsManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Just3itx/3itx-UI-LIB/refs/heads/main/ConfigManager"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInput = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- UI Root
+local main = lib:Load({
+    Title = 'VSTAR',
+    ToggleButton = "RBXID or GetCustomasset",
+    BindGui = Enum.KeyCode.RightControl,
+})
+
+local TabMain = main:AddTab("MAIN")
+main:SelectTab()
+
+--// MAIN: Anti AFK
+local SecAntiAFK = TabMain:AddSection({Title = "Anti AFK"})
+local antiAFKConnection
+SecAntiAFK:AddToggle("AntiAFKToggle", {
+    Title = "Anti AFK",
+    Default = false,
+    Callback = function(state)
+        if state then
+            if not antiAFKConnection then
+                antiAFKConnection = LocalPlayer.Idled:Connect(function()
+                    local vu = game:GetService("VirtualUser")
+                    vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                    task.wait(1)
+                    vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                end)
+            end
+            lib:Notification("VSTAR", "Anti AFK Enabled!", 2)
+        else
+            if antiAFKConnection then
+                antiAFKConnection:Disconnect()
+                antiAFKConnection = nil
+            end
+            lib:Notification("VSTAR", "Anti AFK Disabled!", 2)
+        end
+    end
+})
+
+--// PLAYER TAB
+local TabPlayer = main:AddTab("PLAYER")
+
+-- Movement
+local SecMovement = TabPlayer:AddSection({ Title = "Movement" })
+local wsToggle, wsValue = false, 16
+SecMovement:AddToggle("WalkSpeedToggle", { Title = "Walk Speed", Default = false, Callback = function(v) wsToggle = v end })
+SecMovement:AddSlider("WalkSpeedValue", { Title = "Walk Speed Value", Min = 0, Max = 200, Default = 16, Callback = function(val) wsValue = val end })
+RunService.Stepped:Connect(function()
+    local char = LocalPlayer.Character
+    if wsToggle and char and char:FindFirstChildOfClass("Humanoid") then
+        char:FindFirstChildOfClass("Humanoid").WalkSpeed = wsValue
+    end
+end)
+
+local hjToggle, hjValue = false, 50
+SecMovement:AddToggle("HighJumpToggle", { Title = "High Jump", Default = false, Callback = function(v) hjToggle = v end })
+SecMovement:AddSlider("HighJumpValue", { Title = "High Jump Power", Min = 0, Max = 300, Default = 50, Callback = function(val) hjValue = val end })
+RunService.Stepped:Connect(function()
+    local char = LocalPlayer.Character
+    if hjToggle and char and char:FindFirstChildOfClass("Humanoid") then
+        char:FindFirstChildOfClass("Humanoid").JumpPower = hjValue
+    end
+end)
+
+local infJump = false
+SecMovement:AddToggle("InfiniteJump", { Title = "Infinite Jump", Default = false, Callback = function(v) infJump = v end })
+UserInput.JumpRequest:Connect(function()
+    local char = LocalPlayer.Character
+    if infJump and char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+-- Mode
+local SecMode = TabPlayer:AddSection({ Title = "Mode" })
+local noclip = false
+SecMode:AddToggle("NoClip", { Title = "No Clip", Default = false, Callback = function(v) noclip = v end })
+RunService.Stepped:Connect(function()
+    if noclip then
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+SecMode:AddToggle("NoFallDamage", {
+    Title = "No Fall Damage",
+    Default = false,
+    Callback = function(v)
+        local char = LocalPlayer.Character
+        if v and char and char:FindFirstChildOfClass("Humanoid") then
+            char:FindFirstChildOfClass("Humanoid").StateChanged:Connect(function(_, new)
+                if new == Enum.HumanoidStateType.Freefall then
+                    char:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Seated)
+                end
+            end)
+        end
+    end
+})
+
+SecMode:AddToggle("Godmode", {
+    Title = "Godmode",
+    Default = false,
+    Callback = function(v)
+        local char = LocalPlayer.Character
+        if v and char and char:FindFirstChildOfClass("Humanoid") then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            hum.MaxHealth = math.huge
+            hum.Health = math.huge
+        end
+    end
+})
+
+-- ========= FLY (faithful to FlyGuiV3 logic; NO GUI) =========
+local flyToggleState = false
+local flyMaxSpeedDefault = 50 -- mengikuti default FlyGuiV3
+-- kontrol WASD (horizontal), vertikal tidak dipakai (sesuai script asli)
+local ctrl = {f=0, b=0, l=0, r=0}
+local lastctrl = {f=0, b=0, l=0, r=0}
+local curSpeed = 0
+local flyBG, flyBV
+local flyConn, inputBeganConn, inputEndedConn
+local storedAnimateDisabled = false
+
+local function getRigBodyPart()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.RigType == Enum.HumanoidRigType.R6 then
+        return char:FindFirstChild("Torso")
+    else
+        return char:FindFirstChild("UpperTorso") or char:FindFirstChild("HumanoidRootPart")
+    end
+end
+
+local function enableHumanoidStates(on)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    local list = {
+        Enum.HumanoidStateType.Climbing,
+        Enum.HumanoidStateType.FallingDown,
+        Enum.HumanoidStateType.Flying,
+        Enum.HumanoidStateType.Freefall,
+        Enum.HumanoidStateType.GettingUp,
+        Enum.HumanoidStateType.Jumping,
+        Enum.HumanoidStateType.Landed,
+        Enum.HumanoidStateType.Physics,
+        Enum.HumanoidStateType.PlatformStanding,
+        Enum.HumanoidStateType.Ragdoll,
+        Enum.HumanoidStateType.Running,
+        Enum.HumanoidStateType.RunningNoPhysics,
+        Enum.HumanoidStateType.Seated,
+        Enum.HumanoidStateType.StrafingNoPhysics,
+        Enum.HumanoidStateType.Swimming,
+    }
+    for _, st in ipairs(list) do
+        pcall(function() hum:SetStateEnabled(st, on) end)
+    end
+    if on then
+        hum:ChangeState(Enum.HumanoidStateType.RunningNoPhysics)
+    else
+        hum:ChangeState(Enum.HumanoidStateType.Swimming)
+    end
+end
+
+local function stopFly()
+    flyToggleState = false
+    if flyConn then flyConn:Disconnect() flyConn=nil end
+    if inputBeganConn then inputBeganConn:Disconnect() inputBeganConn=nil end
+    if inputEndedConn then inputEndedConn:Disconnect() inputEndedConn=nil end
+
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+        if flyBG then flyBG:Destroy() flyBG=nil end
+        if flyBV then flyBV:Destroy() flyBV=nil end
+        -- restore animation
+        local animate = char:FindFirstChild("Animate")
+        if animate and storedAnimateDisabled then
+            animate.Disabled = false
+            storedAnimateDisabled = false
+        end
+        -- enable back states per original
+        enableHumanoidStates(true)
+    end
+
+    ctrl = {f=0,b=0,l=0,r=0}
+    lastctrl = {f=0,b=0,l=0,r=0}
+    curSpeed = 0
+    lib:Notification("VSTAR", "Fly OFF", 2)
+end
+
+local function startFly()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local body = getRigBodyPart()
+    if not body then lib:Notification("VSTAR", "Tidak bisa mulai Fly (body part tidak ditemukan)", 3) return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = true end
+
+    -- Matikan animasi, set speed 0 pada semua track (sesuai source)
+    local animate = char:FindFirstChild("Animate")
+    if animate and not animate.Disabled then
+        animate.Disabled = true
+        storedAnimateDisabled = true
+    end
+    local animHum = char:FindFirstChildOfClass("Humanoid") or char:FindFirstChildOfClass("AnimationController")
+    if animHum then
+        for _, track in next, animHum:GetPlayingAnimationTracks() do
+            pcall(function() track:AdjustSpeed(0) end)
+        end
+    end
+
+    -- Disable beberapa state seperti source
+    enableHumanoidStates(false)
+
+    flyBG = Instance.new("BodyGyro")
+    flyBG.P = 9e4
+    flyBG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    flyBG.CFrame = body.CFrame
+    flyBG.Parent = body
+
+    flyBV = Instance.new("BodyVelocity")
+    flyBV.Velocity = Vector3.new(0, 0.1, 0)
+    flyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    flyBV.Parent = body
+
+    ctrl = {f=0,b=0,l=0,r=0}
+    lastctrl = {f=0,b=0,l=0,r=0}
+    curSpeed = 0
+    flyToggleState = true
+
+    inputBeganConn = UserInput.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        local k = input.KeyCode
+        if k == Enum.KeyCode.W then ctrl.f = 1
+        elseif k == Enum.KeyCode.S then ctrl.b = 1
+        elseif k == Enum.KeyCode.A then ctrl.l = 1
+        elseif k == Enum.KeyCode.D then ctrl.r = 1
+        end
+    end)
+    inputEndedConn = UserInput.InputEnded:Connect(function(input, gp)
+        if gp then return end
+        local k = input.KeyCode
+        if k == Enum.KeyCode.W then ctrl.f = 0
+        elseif k == Enum.KeyCode.S then ctrl.b = 0
+        elseif k == Enum.KeyCode.A then ctrl.l = 0
+        elseif k == Enum.KeyCode.D then ctrl.r = 0
+        end
+    end)
+
+    flyConn = RunService.RenderStepped:Connect(function()
+        if not flyToggleState or not LocalPlayer.Character then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+
+        -- Akselerasi persis pola source
+        local moving = (ctrl.l + ctrl.r) ~= 0 or (ctrl.f + ctrl.b) ~= 0
+        if moving then
+            curSpeed = curSpeed + 0.5 + (curSpeed / (flyMaxSpeedDefault == 0 and 1 or flyMaxSpeedDefault))
+            if curSpeed > flyMaxSpeedDefault then curSpeed = flyMaxSpeedDefault end
+        elseif curSpeed ~= 0 then
+            curSpeed = curSpeed - 1
+            if curSpeed < 0 then curSpeed = 0 end
+        end
+
+        -- v = ((cam.CFrame * CFrame.new((l+r)*2, 0, (f+b)*2)).p - cam.CFrame.p) * speed
+        local cf = cam.CFrame
+        if moving then
+            local offset = CFrame.new((ctrl.l + ctrl.r) * 2, 0, (ctrl.f + ctrl.b) * 2)
+            flyBV.Velocity = ((cf * offset).p - cf.p) * curSpeed
+            lastctrl = {f = ctrl.f, b = ctrl.b, l = ctrl.l, r = ctrl.r}
+        elseif curSpeed ~= 0 then
+            local offset = CFrame.new((lastctrl.l + lastctrl.r) * 2, 0, (lastctrl.f + lastctrl.b) * 2)
+            flyBV.Velocity = ((cf * offset).p - cf.p) * curSpeed
+        else
+            flyBV.Velocity = Vector3.new(0,0,0)
+        end
+
+        -- Gyro orientasi kamera + sedikit tilt berdasarkan f/b seperti source
+        flyBG.CFrame = cf * CFrame.Angles(-math.rad((ctrl.f + ctrl.b) * 50 * (flyMaxSpeedDefault == 0 and 0 or (curSpeed / flyMaxSpeedDefault))), 0, 0)
+    end)
+
+    lib:Notification("VSTAR", "Fly ON", 2)
+end
+
+SecMode:AddToggle("Fly", {
+    Title = "Fly",
+    Default = false,
+    Callback = function(state)
+        if state then startFly() else stopFly() end
+    end
+})
+
+-- Respawn safety: jika Fly toggle ON lalu respawn, matikan sisa body movers & reset
+LocalPlayer.CharacterAdded:Connect(function()
+    if flyToggleState then
+        -- pastikan bersih, lalu nyalakan lagi agar konsisten dengan toggle
+        stopFly()
+        task.wait(0.2)
+        startFly()
+    end
+end)
+
+--// MISC TAB
+local TabMisc = main:AddTab("MISC")
+
+-- Teleport
+local SecTeleport = TabMisc:AddSection({ Title = "Teleport" })
+local selectedPlayer = nil
+local playerList = {}
+
+local function buildPlayerList()
+    table.clear(playerList)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(playerList, p.Name)
+        end
+    end
+    -- Refresh opsi dropdown bila sudah dibuat
+    if lib.Flags["SelectTeleportPlayer"] and lib.Flags["SelectTeleportPlayer"].SetOptions then
+        pcall(function()
+            lib.Flags["SelectTeleportPlayer"]:SetOptions(playerList)
+        end)
+    end
+end
+buildPlayerList()
+Players.PlayerAdded:Connect(buildPlayerList)
+Players.PlayerRemoving:Connect(buildPlayerList)
+
+SecTeleport:AddDropdown("SelectTeleportPlayer", {
+    Title = "Select Player",
+    Options = playerList,
+    Callback = function(name) selectedPlayer = name end
+})
+SecTeleport:AddButton({
+    Title = "Refresh Player List",
+    Callback = function()
+        buildPlayerList()
+        lib:Notification("VSTAR", "Player list refreshed!", 2)
+    end
+})
+SecTeleport:AddButton({
+    Title = "Teleport to Player",
+    Callback = function()
+        if not selectedPlayer then
+            lib:Notification("VSTAR", "No player selected!", 2)
+            return
+        end
+        local target = Players:FindFirstChild(selectedPlayer)
+        if not (target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")) then
+            lib:Notification("VSTAR", "Player not found!", 2)
+            return
+        end
+        local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and LocalPlayer.Character then
+            LocalPlayer.Character:PivotTo(hrp.CFrame)
+            lib:Notification("VSTAR", "Teleported to "..selectedPlayer, 2)
+        else
+            lib:Notification("VSTAR", "Target not available!", 2)
+        end
+    end
+})
+
+-- Other
+local SecOther = TabMisc:AddSection({ Title = "Other" })
+SecOther:AddToggle("ChatSpy", {
+    Title = "Chat Spy",
+    Default = false,
+    Callback = function(state)
+        if state then
+            for _, p in ipairs(Players:GetPlayers()) do
+                p.Chatted:Connect(function(msg)
+                    print("[CHAT SPY] " .. p.Name .. ": " .. msg)
+                end)
+            end
+            lib:Notification("VSTAR", "Chat Spy ON", 3)
+        else
+            lib:Notification("VSTAR", "Chat Spy OFF", 3)
+        end
+    end
+})
+
+-- ESP
+local function createESP(player)
+    if player == LocalPlayer then return end
+    if player.Character and not player.Character:FindFirstChild("VSTAR_ESP") then
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "VSTAR_ESP"
+        highlight.Adornee = player.Character
+        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.Parent = player.Character
+    end
+end
+local function removeESP(player)
+    if player.Character and player.Character:FindFirstChild("VSTAR_ESP") then
+        player.Character.VSTAR_ESP:Destroy()
+    end
+end
+
+SecOther:AddToggle("ESP", {
+    Title = "ESP",
+    Default = false,
+    Callback = function(state)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if state then createESP(p) else removeESP(p) end
+        end
+        if state then
+            Players.PlayerAdded:Connect(createESP)
+            Players.PlayerRemoving:Connect(removeESP)
+        end
+    end
+})
+
+-- Full Bright
+local normalBrightness = Lighting.Brightness
+local normalClockTime = Lighting.ClockTime
+local normalFogEnd = Lighting.FogEnd
+local normalAmbient = Lighting.Ambient
+SecOther:AddToggle("FullBright", {
+    Title = "Full Bright",
+    Default = false,
+    Callback = function(state)
+        if state then
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 100000
+            Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        else
+            Lighting.Brightness = normalBrightness
+            Lighting.ClockTime = normalClockTime
+            Lighting.FogEnd = normalFogEnd
+            Lighting.Ambient = normalAmbient
+        end
+    end
+})
+
+--// SERVER TAB
+local TabServer = main:AddTab("SERVER")
+local SecServerControl = TabServer:AddSection({Title = "Server Control"})
+
+-- Auto Reconnect (robust)
+local autoReconnectEnabled = false
+local rejoinLoopThread = nil
+local reconnectConns = {}
+
+local function stopRejoinLoop()
+    rejoinLoopThread = nil
+end
+
+local function startRejoinLoop()
+    if rejoinLoopThread then return end
+    rejoinLoopThread = task.spawn(function()
+        local delaySec = 6
+        while autoReconnectEnabled do
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            task.wait(delaySec)
+        end
+    end)
+end
+
+local function connectAutoReconnectSignals()
+    for _, c in ipairs(reconnectConns) do pcall(function() c:Disconnect() end) end
+    table.clear(reconnectConns)
+
+    table.insert(reconnectConns, TeleportService.TeleportInitFailed:Connect(function(player, result, msg)
+        if autoReconnectEnabled and player == LocalPlayer then
+            startRejoinLoop()
+        end
+    end))
+
+    table.insert(reconnectConns, LocalPlayer.OnTeleport:Connect(function(state)
+        if autoReconnectEnabled and state == Enum.TeleportState.Failed then
+            startRejoinLoop()
+        end
+    end))
+
+    table.insert(reconnectConns, CoreGui.DescendantAdded:Connect(function(obj)
+        if not autoReconnectEnabled then return end
+        if obj.Name == "ErrorPrompt" then
+            startRejoinLoop()
+        end
+    end))
+
+    table.insert(reconnectConns, GuiService.ErrorMessageChanged:Connect(function(msg)
+        if autoReconnectEnabled and msg and #msg > 0 then
+            startRejoinLoop()
+        end
+    end))
+end
+
+local function disableAutoReconnect()
+    for _, c in ipairs(reconnectConns) do pcall(function() c:Disconnect() end) end
+    table.clear(reconnectConns)
+end
+
+SecServerControl:AddToggle("AutoReconnect", {
+    Title = "Auto Reconnect",
+    Default = false,
+    Callback = function(v)
+        autoReconnectEnabled = v
+        if v then
+            connectAutoReconnectSignals()
+            lib:Notification("VSTAR", "Auto Reconnect ON", 2)
+        else
+            disableAutoReconnect()
+            lib:Notification("VSTAR", "Auto Reconnect OFF", 2)
+        end
+    end
+})
+
+SecServerControl:AddButton({
+    Title = "Rejoin",
+    Callback = function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end
+})
+
+SecServerControl:AddButton({
+    Title = "Hop Server",
+    Callback = function()
+        local ok, res = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(
+                ("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+            ))
+        end)
+        if not ok or not res or not res.data then
+            lib:Notification("VSTAR", "Gagal ambil daftar server", 3)
+            return
+        end
+        for _, srv in ipairs(res.data) do
+            if srv.id ~= game.JobId and srv.playing < srv.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, srv.id, LocalPlayer)
+                return
+            end
+        end
+        lib:Notification("VSTAR", "Tidak ada server tersedia", 3)
+    end
+})
+
+SecServerControl:AddButton({
+    Title = "Copy Server ID",
+    Callback = function()
+        if setclipboard then
+            setclipboard(game.JobId)
+            lib:Notification("VSTAR", "Server ID copied!", 2)
+        else
+            lib:Notification("VSTAR", "setclipboard tidak tersedia", 2)
+        end
+    end
+})
+
+SecServerControl:AddTextbox({
+    Title = "Join via Server ID",
+    Default = "",
+    PlaceHolder = "Masukkan JobId",
+    TextDisappear = false,
+    Callback = function(id)
+        if typeof(id) == "string" and #id > 0 then
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, id, LocalPlayer)
+        else
+            lib:Notification("VSTAR", "JobId tidak valid", 2)
+        end
+    end
+})
+
+--// CONFIG TAB
+local TabConfig = main:AddTab("CONFIG")
+FlagsManager:SetLibrary(lib)
+FlagsManager:SetIgnoreIndexes({})
+FlagsManager:SetFolder("Config/VSTAR")
+FlagsManager:InitSaveSystem(TabConfig)
+
+lib:Notification('VSTAR', 'Thanks for using VSTAR!', 3)
